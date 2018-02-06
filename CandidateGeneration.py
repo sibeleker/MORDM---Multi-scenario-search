@@ -93,6 +93,53 @@ def lake_problem_closedloop(
     max_P = np.max(average_daily_P)
     return max_P, utility, inertia, reliability
 
+def lake_problem_openloop(
+         b = 0.42,          # decay rate for P in lake (0.42 = irreversible)
+         q = 2.0,           # recycling exponent
+         mean = 0.02,       # mean of natural inflows
+         stdev = 0.001,     # future utility discount rate
+         delta = 0.98,      # standard deviation of natural inflows
+         
+         alpha = 0.4,       # utility from pollution
+         nsamples = 100,    # Monte Carlo sampling of natural inflows
+         timehorizon = 100, # simulation time
+         **kwargs):         
+
+    decisions = [kwargs[str(i)] for i in range(timehorizon)]
+    
+    Pcrit = brentq(lambda x: x**q/(1+x**q) - b*x, 0.01, 1.5)
+    nvars = int(timehorizon)
+    X = np.zeros((nvars,))
+    average_daily_P = np.zeros((nvars,))
+    decisions = np.array(decisions)
+
+    reliability = 0.0
+
+    for _ in range(nsamples):
+        X[0] = 0.0
+
+        natural_inflows = np.random.lognormal(
+                math.log(mean**2 / math.sqrt(stdev**2 + mean**2)),
+                math.sqrt(math.log(1.0 + stdev**2 / mean**2)),
+                size = nvars)
+  
+        for t in range(1,nvars):
+            
+            X[t] = (1-b)*X[t-1] + X[t-1]**q/(1+X[t-1]**q) +\
+                    decisions[t-1] +\
+                    natural_inflows[t-1]
+            average_daily_P[t] += X[t]/float(nsamples)
+        
+        reliability += np.sum(X < Pcrit)/float(nsamples*nvars)
+
+    utility = np.sum(alpha*decisions*np.power(delta,np.arange(nvars)))
+    inertia = np.sum(np.absolute(np.diff(decisions)) > 0.02)/float(nvars-1)
+      
+    max_P = np.max(average_daily_P)
+    return max_P, utility, inertia, reliability
+
+
+
 def evaluate_function(x, scenario={}, model=None, decision_vars=None, searchover=None):
     '''helper function for transforming decision variables to correctly
     formatted input for running the model
@@ -126,40 +173,7 @@ def evaluate_function(x, scenario={}, model=None, decision_vars=None, searchover
     
     return outcomes
 
-def plot_convergence(fe_results, scenario):
-    '''
-    fe_results is function evaluation results, 2d list, iterations x 2 (0: nfe, 1: hypervolume)
-    '''
-    
-    # if myltiple objectives
-     
-#     no_obj = results.shape[0]
-#     figure, axes = plt.subplots(no_obj, 1)
-#     figure.set_figheight(15)
-#     figure.set_figwidth(9) 
-#     
-#     for i in range(no_obj):
-#         #ax = figure.add_subplot(grid[i,0])
-#         ax = axes[i]
-#         ax.plot(results[i])
-#         ax.set_title("Convergence for objective {}".format(i), fontsize=16)
-#         ax.set_xlabel("nfe")
-    
-    # if single value for hypervolume
-    results = np.swapaxes(np.array(fe_results), 0, 1)
-    nfe = results[0]
-    hv = results[1]
-    figure = plt.figure()
-    sns.set_style("whitegrid")
-    ax = figure.add_subplot(111)
-    ax.plot(nfe, hv, color='black')
-    ax.set_xlabel("NFE", fontsize=12)
-    ax.set_ylabel("Hypervolume", fontsize=12)
-    ax.set_title("Convergence of the search process", fontsize=16)
-    
-    
-    plt.savefig('./Convergence_EpsNsgaII_nfe10000_sd1234_epsforeach_s{}.png'.format(scenario))     
-    plt.show()
+
 
 def optimize(model, scenario, nfe, epsilons, sc_name, algorithm=EpsNSGAII, searchover='levers'):
     '''optimize the model
@@ -235,7 +249,7 @@ def optimize(model, scenario, nfe, epsilons, sc_name, algorithm=EpsNSGAII, searc
 if __name__ == "__main__":   
 
     #instantiate the model
-    lake_model = Model('lakeproblem', function=lake_problem_closedloop)
+    lake_model = Model('lakeproblem', function=lake_problem_openloop)
     lake_model.time_horizon = 100
     #specify uncertainties
     lake_model.uncertainties = [RealParameter('b', 0.1, 0.45),
@@ -245,12 +259,14 @@ if __name__ == "__main__":
                                 RealParameter('delta', 0.93, 0.99)]
     
     # set levers, one for each time step
-    lake_model.levers = [RealParameter("c1", -2, 2),
-                         RealParameter("c2", -2, 2),
-                         RealParameter("r1", 0, 2), #[0,2]
-                         RealParameter("r2", 0, 2), #
-                         RealParameter("w1", 0, 1)
-                         ]
+#     lake_model.levers = [RealParameter("c1", -2, 2),
+#                          RealParameter("c2", -2, 2),
+#                          RealParameter("r1", 0, 2), #[0,2]
+#                          RealParameter("r2", 0, 2), #
+#                          RealParameter("w1", 0, 1)
+#                          ]
+    lake_model.levers = [RealParameter(str(i), 0, 0.1) for i in 
+                     range(lake_model.time_horizon)]
     
     #specify outcomes 
     lake_model.outcomes = [ScalarOutcome('max_P', kind=ScalarOutcome.MINIMIZE),
@@ -264,24 +280,29 @@ if __name__ == "__main__":
                             Constant('timehorizon', lake_model.time_horizon),
                            ]
     #Load the initial exploration for scenarios
-    directory = 'D:/sibeleker/surfdrive/Documents/Notebooks/Lake_model-MORDM/Sibel/data/'
-    fn = '211_experiments_closedloop_noApollution_inertia.tar.gz'
+    #directory = 'D:/sibeleker/surfdrive/Documents/Notebooks/Lake_model-MORDM/Sibel/data/'
+    #fn = '211_experiments_closedloop_noApollution_inertia.tar.gz'
+    directory = 'H:/MyDocuments/Notebooks/Lake_model-MORDM/Sibel/MORDM_paper/data/'
+    #fn = '206_experiments_openloop_Apollution.tar.gz'
+    fn = '500_experiments_openloop_5policies.tar.gz'
     scenario_results = load_results(directory+fn)
     experiments, outcomes = scenario_results
     #get the selected scenarios
-    scenarios = ['Ref', 153, 160, 197, 207] #EUCLIDEAN, W=0.5
+    #scenarios = [77,  96, 130, 181]
+    scenarios = ['Ref', 77,  96, 130, 181]
+    random_scenarios = [81, 289, 391, 257]
     #optimize for each selected scenario
-    pool = multiprocessing.Pool(processes=3)
-    timeout = 3000
+    pool = multiprocessing.Pool(processes=8)
+    timeout = 5000
     start = time.time()
 
     
-    for s in scenarios:
+    for s in random_scenarios:
         if s == 'Ref':
-            result = pool.apply_async(optimize, args=(lake_model, {}, 5000, [0.1, 0.05, 0.005, 0.005], 'scRef'))
+            result = pool.apply_async(optimize, args=(lake_model, {}, 10000, [0.1, 0.05, 0.005, 0.005], 'scRef'))
         else:
             scenario = experiments[s]
-            result = pool.apply_async(optimize, args=(lake_model, scenario, 5000, [0.1, 0.05, 0.005, 0.005], 'sc{}'.format(s)))
+            result = pool.apply_async(optimize, args=(lake_model, scenario, 10000, [0.1, 0.05, 0.005, 0.005], 'rnd_{}'.format(s)))
         try:
             results, df = result.get(timeout)
 
@@ -292,8 +313,9 @@ if __name__ == "__main__":
         end = time.time()
         print("scenario {} took {} seconds.".format(s, end-start))
         
-        fn1 = './Results_EpsNsgaII_nfe10000_sc{}_v7.csv'.format(s)
-        fn2 = './Hypervolume_scenario_sc{}_v7.csv'.format(s)
+        
+        fn1 = './Results_RevisionRandom_nfe10000_sc{}.csv'.format(s)
+        fn2 = './Hypervolume_RevisionRandom_nfe10000_scenario_sc{}.csv'.format(s)
         results.to_csv(fn1)
         df.to_csv(fn2)
         print('found {} solutions for scenario {}'.format(results.values.shape[0], s))

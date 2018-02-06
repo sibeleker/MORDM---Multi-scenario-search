@@ -86,10 +86,56 @@ def lake_problem_closedloop(
     max_P = np.max(average_daily_P)
     return max_P, utility, inertia, reliability
 
+
+def lake_problem_openloop(
+         b = 0.42,          # decay rate for P in lake (0.42 = irreversible)
+         q = 2.0,           # recycling exponent
+         mean = 0.02,       # mean of natural inflows
+         stdev = 0.001,     # future utility discount rate
+         delta = 0.98,      # standard deviation of natural inflows
+         
+         alpha = 0.4,       # utility from pollution
+         nsamples = 100,    # Monte Carlo sampling of natural inflows
+         timehorizon = 100, # simulation time
+         **kwargs):         
+
+    decisions = [kwargs[str(i)] for i in range(timehorizon)]
+    
+    Pcrit = brentq(lambda x: x**q/(1+x**q) - b*x, 0.01, 1.5)
+    nvars = int(timehorizon)
+    X = np.zeros((nvars,))
+    average_daily_P = np.zeros((nvars,))
+    decisions = np.array(decisions)
+
+    reliability = 0.0
+
+    for _ in range(nsamples):
+        X[0] = 0.0
+
+        natural_inflows = np.random.lognormal(
+                math.log(mean**2 / math.sqrt(stdev**2 + mean**2)),
+                math.sqrt(math.log(1.0 + stdev**2 / mean**2)),
+                size = nvars)
+  
+        for t in range(1,nvars):
+            
+            X[t] = (1-b)*X[t-1] + X[t-1]**q/(1+X[t-1]**q) +\
+                    decisions[t-1] +\
+                    natural_inflows[t-1]
+            average_daily_P[t] += X[t]/float(nsamples)
+        
+        reliability += np.sum(X < Pcrit)/float(nsamples*nvars)
+
+    utility = np.sum(alpha*decisions*np.power(delta,np.arange(nvars)))
+    inertia = np.sum(np.absolute(np.diff(decisions)) > 0.02)/float(nvars-1)
+      
+    max_P = np.max(average_daily_P)
+    return max_P, utility, inertia, reliability
+
 if __name__ == "__main__":   
 
     #instantiate the model
-    lake_model = Model('lakeproblem', function=lake_problem_closedloop)
+    lake_model = Model('lakeproblem', function=lake_problem_openloop)
     lake_model.time_horizon = 100
     
     lake_model.uncertainties = [RealParameter('b', 0.1, 0.45),
@@ -98,12 +144,15 @@ if __name__ == "__main__":
                                 RealParameter('stdev', 0.001, 0.005),
                                 RealParameter('delta', 0.93, 0.99)]
     
-    lake_model.levers = [RealParameter("c1", -2, 2),
-                         RealParameter("c2", -2, 2),
-                         RealParameter("r1", 0, 2), #[0,2]
-                         RealParameter("r2", 0, 2), #
-                         RealParameter("w1", 0, 1)
-                         ]
+#     lake_model.levers = [RealParameter("c1", -2, 2),
+#                          RealParameter("c2", -2, 2),
+#                          RealParameter("r1", 0, 2), #[0,2]
+#                          RealParameter("r2", 0, 2), #
+#                          RealParameter("w1", 0, 1)
+#                          ]
+
+    lake_model.levers = [RealParameter(str(i), 0, 0.1) for i in 
+                     range(lake_model.time_horizon)]
 
     lake_model.outcomes = [ScalarOutcome('max_P', kind=ScalarOutcome.MINIMIZE),
                            ScalarOutcome('utility', kind=ScalarOutcome.MAXIMIZE),
@@ -114,19 +163,19 @@ if __name__ == "__main__":
                             Constant('nsamples', 100),
                             Constant('timehorizon', lake_model.time_horizon)]
     
-    #scenarios = ['Ref', 55, 108, 127, 237] # these are scenarios selected without normalization
-    #scenarios_set_2 = ['Ref', 55, 99, 186, 192]
-    scenarios = ['Ref', 153, 160, 197, 207]
+
+    scenarios = ['Ref', 77,  96, 130, 181]
+    random_scenarios = [81, 289, 391, 257]
     policies = []
     
-    for s in scenarios:
+    for s in random_scenarios:
 #         if s == 'Ref':
 #             solutions = pd.DataFrame.from_csv(r'../results/Results_EpsNsgaII_nfe10000_scRef_v3.csv')
 #         else:
 #             solutions = pd.DataFrame.from_csv(r'../results/Results_EpsNsgaII_nfe10000_sc{}_v5.csv'.format(s))
         
         #checked if there are duplicates: No.
-        solutions = pd.DataFrame.from_csv(r'../results/brushed_solutions_{}.csv'.format(s))
+        solutions = pd.DataFrame.from_csv(r'../data/brushed_random_nfe10000_sc{}.csv'.format(s))
         for index, row in solutions.iterrows():
             name = str(s)+'_'+str(index)
             decision = {lever.name:row[lever.name] for lever in lake_model.levers} #levers are in the first columns of the solutions
@@ -134,5 +183,5 @@ if __name__ == "__main__":
     #with MultiprocessingEvaluator(lake_model) as evaluator:
     #    results = evaluator.perform_experiments(scenarios=1000, policies=policies)
     results = perform_experiments(lake_model, 1000, policies, parallel=True)
-    save_results(results, r'../results/CandidateTesting_v7_1000scenarios_65cands.tar.gz')
+    save_results(results, r'../CandidateTesting_1000scenarios_revisionRandom_nfe10000.tar.gz')
                                        
